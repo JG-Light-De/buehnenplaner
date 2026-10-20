@@ -121,6 +121,15 @@ svg{display:block;width:100%;height:auto;}
     <label>Bühnenhöhe</label>
     <select id="stageHeightSelect"></select>
   </div>
+  <div class="field">
+    <label>Startecke</label>
+    <select id="startCornerSelect">
+      <option value="hr">hinten rechts</option>
+      <option value="hl">hinten links</option>
+      <option value="vr">vorne rechts</option>
+      <option value="vl">vorne links</option>
+    </select>
+  </div>
   <button class="btn ghost" id="clearBtn">Bühne leeren</button>
   <button class="btn ghost" id="pdfBtn">📄 Als PDF exportieren</button>
 </div>
@@ -248,7 +257,7 @@ const PALETTE=['#6f9bd1','#d1875f','#8bbf6f','#b98bd1','#d1b06f','#5fb3b5'];
 let paletteIdx=0;
 
 let state={
-  stageW:800, stageD:600, gridStep:50, legLength:40, customLegLengths:[],
+  stageW:800, stageD:600, gridStep:50, legLength:40, customLegLengths:[], startCorner:'hr',
   types:[
     {id:'t1',name:'Podest 200×100',w:200,d:100,color:'#d1875f'},
     {id:'t2',name:'Podest 100×100',w:100,d:100,color:'#6f9bd1'},
@@ -325,11 +334,28 @@ async function loadState(){
 
 function fmt(n){ return (Math.round(n*100)/100).toLocaleString('de-DE'); }
 
+// Grundlage: Start hinten rechts. Für andere Startecken wird gespiegelt,
+// damit die Federn immer zur Startecke und die Nuten (mit den Füßen) davon weg zeigen.
 function getSides(p){
-  if(p.rot===90){
-    return {top:'nut', right:'feder', bottom:'feder', left:'nut'};
+  const base=p.rot===90
+    ? {top:'nut', right:'feder', bottom:'feder', left:'nut'}
+    : {top:'feder', right:'feder', bottom:'nut', left:'nut'};
+  const sc=state.startCorner||'hr';
+  const s={...base};
+  if(sc[1]==='l'){ s.left=base.right; s.right=base.left; }
+  if(sc[0]==='v'){ s.top=base.bottom; s.bottom=base.top; }
+  return s;
+}
+
+function getStartPlateId(){
+  const sc=state.startCorner||'hr';
+  const cx=sc[1]==='r' ? state.stageW : 0;
+  const cy=sc[0]==='v' ? state.stageD : 0;
+  for(const p of state.placed){
+    const d=renderDims(p);
+    if((p.x===cx||p.x+d.w===cx) && (p.y===cy||p.y+d.h===cy)) return p.id;
   }
-  return {top:'feder', right:'feder', bottom:'nut', left:'nut'};
+  return null;
 }
 
 function getFootPointSet(){
@@ -583,6 +609,7 @@ function renderCanvas(){
   parts.push(`<line x1="${dimX}" y1="0" x2="${dimX}" y2="${state.stageD}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>`);
   parts.push(`<text x="${dimX-6}" y="${state.stageD/2}" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="${fs}" fill="var(--accent)" transform="rotate(-90 ${dimX-6} ${state.stageD/2})">${fmt(state.stageD/100)} m</text>`);
 
+  const startId=getStartPlateId();
   for(const p of state.placed){
     const d=renderDims(p);
     const selected=p.id===state.selectedId;
@@ -596,6 +623,7 @@ function renderCanvas(){
     parts.push(`<rect width="${d.w}" height="${d.h}" rx="4" fill="${p.color}" stroke="${stroke}" stroke-width="${strokeW}" stroke-dasharray="${dash}"/>`);
     parts.push(`<text x="26" y="${nameFs+6}" font-family="Space Grotesk, sans-serif" font-size="${nameFs}" font-weight="500" fill="#fff">${p.name}</text>`);
     parts.push(`<text x="26" y="${nameFs+6+dimsFs+4}" font-family="JetBrains Mono, monospace" font-size="${dimsFs}" fill="rgba(255,255,255,0.85)">${p.w}×${p.d}</text>`);
+    if(p.id===startId) parts.push(`<text x="${d.w/2}" y="${d.h/2+nameFs/2}" text-anchor="middle" font-family="Space Grotesk, sans-serif" font-size="${nameFs*1.1}" font-weight="700" fill="#fff">START</text>`);
     parts.push(`</g>`);
   }
 
@@ -1298,6 +1326,7 @@ function exportPDF(){
   doc.setLineWidth(0.3);
   doc.rect(offsetX, offsetY, planW, planH);
 
+  const pdfStartId=getStartPlateId();
   for(const p of state.placed){
     const d=renderDims(p);
     const x=offsetX+(p.x/10)*scale;
@@ -1317,6 +1346,10 @@ function exportPDF(){
     if(w>8 && h>9){
       doc.setFontSize(nameFs*0.8);
       doc.text(p.w+'x'+p.d, tx, y+nameFs*0.9+nameFs*0.9);
+    }
+    if(p.id===pdfStartId && w>8 && h>5){
+      doc.setFontSize(nameFs);
+      doc.text('START', x+w/2, y+h/2+nameFs*0.35, {align:'center'});
     }
   }
   const footRmm=Math.max(0.6, Math.min(1.4, 5*scale/10));
@@ -1342,7 +1375,8 @@ function exportPDF(){
     fy+=5;
   }
   const legs=countLegs();
-  doc.text(`Füße nötig: ${legs} x ${state.legLength} cm  (Punkt im Plan = Ecke, in der der Fuß steckt)`, margin, fy);
+  const scNames={hr:'hinten rechts',hl:'hinten links',vr:'vorne rechts',vl:'vorne links'};
+  doc.text(`Füße nötig: ${legs} x ${state.legLength} cm  (Punkt im Plan = Ecke, in der der Fuß steckt; Start ${scNames[state.startCorner||'hr']})`, margin, fy);
 
   doc.save('buehnenplan.pdf');
 }
@@ -1513,6 +1547,11 @@ document.getElementById('stageD').addEventListener('change', (e)=>{
   clampAllPlaced();
   renderCanvas(); saveState();
 });
+document.getElementById('startCornerSelect').addEventListener('change', (e)=>{
+  state.startCorner=e.target.value;
+  renderCanvas();
+  saveState();
+});
 document.getElementById('stageHeightSelect').addEventListener('change', (e)=>{
   state.legLength=parseInt(e.target.value);
   renderLegOptions();
@@ -1627,6 +1666,7 @@ async function init(){
   if(!state.primaryTypeId && state.types.length>0){ state.primaryTypeId=state.types[0].id; }
   document.getElementById('stageW').value=state.stageW/100;
   document.getElementById('stageD').value=state.stageD/100;
+  document.getElementById('startCornerSelect').value=state.startCorner||'hr';
   renderLegOptions();
   renderLibrary();
   renderRailTypeGrid();
