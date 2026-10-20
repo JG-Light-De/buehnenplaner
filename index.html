@@ -362,6 +362,53 @@ function getFootPointSet(){
   return {feet, allCorners:cornerSet};
 }
 
+// Ordnet jeden nötigen Fuß der Platte zu, in deren Ecke er steckt.
+// Bevorzugt die Platte, die an diesem Punkt an keiner Nachbar-Nut hängt (also selbst trägt),
+// danach die mit den meisten Nut-Seiten an dieser Ecke.
+function getFootAssignments(){
+  const {feet}=getFootPointSet();
+  const placed=state.placed;
+  const result=[];
+  for(const key of feet){
+    const parts=key.split(',');
+    const px=Number(parts[0]), py=Number(parts[1]);
+    let best=null;
+    for(const p of placed){
+      const d=renderDims(p);
+      const x0=p.x, y0=p.y, x1=p.x+d.w, y1=p.y+d.h;
+      if(!((px===x0||px===x1) && (py===y0||py===y1))) continue;
+      const sides=getSides(p);
+      const vSide=px===x0?'left':'right';
+      const hSide=py===y0?'top':'bottom';
+      const dirY=py===y0?1:-1, dirX=px===x0?1:-1;
+      let hangs=0;
+      for(const q of placed){
+        if(q===p) continue;
+        const qd=renderDims(q);
+        const qs=getSides(q);
+        const qx0=q.x, qy0=q.y, qx1=q.x+qd.w, qy1=q.y+qd.h;
+        const yIn=py+dirY*0.5, xIn=px+dirX*0.5;
+        if(sides[vSide]==='feder' && yIn>qy0 && yIn<qy1){
+          if(vSide==='left' && qx1===px && qs.right==='nut') hangs++;
+          if(vSide==='right' && qx0===px && qs.left==='nut') hangs++;
+        }
+        if(sides[hSide]==='feder' && xIn>qx0 && xIn<qx1){
+          if(hSide==='top' && qy1===py && qs.bottom==='nut') hangs++;
+          if(hSide==='bottom' && qy0===py && qs.top==='nut') hangs++;
+        }
+      }
+      const nuts=(sides[vSide]==='nut'?1:0)+(sides[hSide]==='nut'?1:0);
+      const score=hangs*10-nuts;
+      if(!best || score<best.score){
+        const inset=Math.min(12, d.w/4, d.h/4);
+        best={score, plateId:p.id, x:px, y:py, cx:px+dirX*inset, cy:py+dirY*inset};
+      }
+    }
+    if(best) result.push(best);
+  }
+  return result;
+}
+
 function countLegs(){
   return getFootPointSet().feet.size;
 }
@@ -547,9 +594,14 @@ function renderCanvas(){
     else if(selected){ stroke='var(--accent2)'; strokeW=3; dash='6 4'; }
     parts.push(`<g data-podest="${p.id}" transform="translate(${p.x},${p.y})" style="cursor:${state.locked?'default':'grab'};touch-action:none;">`);
     parts.push(`<rect width="${d.w}" height="${d.h}" rx="4" fill="${p.color}" stroke="${stroke}" stroke-width="${strokeW}" stroke-dasharray="${dash}"/>`);
-    parts.push(`<text x="8" y="${nameFs+6}" font-family="Space Grotesk, sans-serif" font-size="${nameFs}" font-weight="500" fill="#fff">${p.name}</text>`);
-    parts.push(`<text x="8" y="${nameFs+6+dimsFs+4}" font-family="JetBrains Mono, monospace" font-size="${dimsFs}" fill="rgba(255,255,255,0.85)">${p.w}×${p.d}</text>`);
+    parts.push(`<text x="26" y="${nameFs+6}" font-family="Space Grotesk, sans-serif" font-size="${nameFs}" font-weight="500" fill="#fff">${p.name}</text>`);
+    parts.push(`<text x="26" y="${nameFs+6+dimsFs+4}" font-family="JetBrains Mono, monospace" font-size="${dimsFs}" fill="rgba(255,255,255,0.85)">${p.w}×${p.d}</text>`);
     parts.push(`</g>`);
+  }
+
+  const footR=Math.max(5, Math.min(state.stageW,state.stageD)/120);
+  for(const f of getFootAssignments()){
+    parts.push(`<circle cx="${f.cx}" cy="${f.cy}" r="${footR}" fill="#1a1d21" stroke="#fff" stroke-width="${footR*0.35}" pointer-events="none"/>`);
   }
 
   const railSegs=computeRailSegments();
@@ -1260,11 +1312,19 @@ function exportPDF(){
     doc.setTextColor(255,255,255);
     const nameFs=Math.max(5, Math.min(w,h)/2.2);
     doc.setFontSize(nameFs);
-    if(w>8 && h>5) doc.text(p.name, x+1, y+nameFs*0.9+0.5);
+    const tx=x+Math.min(w/4, 1.2*scale/10+1.6);
+    if(w>8 && h>5) doc.text(p.name, tx, y+nameFs*0.9+0.5);
     if(w>8 && h>9){
       doc.setFontSize(nameFs*0.8);
-      doc.text(p.w+'x'+p.d, x+1, y+nameFs*0.9+nameFs*0.9);
+      doc.text(p.w+'x'+p.d, tx, y+nameFs*0.9+nameFs*0.9);
     }
+  }
+  const footRmm=Math.max(0.6, Math.min(1.4, 5*scale/10));
+  doc.setFillColor(26,29,33);
+  doc.setDrawColor(255,255,255);
+  doc.setLineWidth(0.2);
+  for(const f of getFootAssignments()){
+    doc.circle(offsetX+(f.cx/10)*scale, offsetY+(f.cy/10)*scale, footRmm, 'FD');
   }
   doc.setTextColor(0);
 
@@ -1282,7 +1342,7 @@ function exportPDF(){
     fy+=5;
   }
   const legs=countLegs();
-  doc.text(`Füße nötig: ${legs} x ${state.legLength} cm`, margin, fy);
+  doc.text(`Füße nötig: ${legs} x ${state.legLength} cm  (Punkt im Plan = Ecke, in der der Fuß steckt)`, margin, fy);
 
   doc.save('buehnenplan.pdf');
 }
