@@ -124,6 +124,7 @@ svg{display:block;width:100%;height:auto;}
   <div class="field">
     <label>Startecke</label>
     <select id="startCornerSelect">
+      <option value="auto">automatisch</option>
       <option value="hr">hinten rechts</option>
       <option value="hl">hinten links</option>
       <option value="vr">vorne rechts</option>
@@ -257,7 +258,7 @@ const PALETTE=['#6f9bd1','#d1875f','#8bbf6f','#b98bd1','#d1b06f','#5fb3b5'];
 let paletteIdx=0;
 
 let state={
-  stageW:800, stageD:600, gridStep:50, legLength:40, customLegLengths:[], startCorner:'hr',
+  stageW:800, stageD:600, gridStep:50, legLength:40, customLegLengths:[], startCorner:'auto',
   types:[
     {id:'t1',name:'Podest 200×100',w:200,d:100,color:'#d1875f'},
     {id:'t2',name:'Podest 100×100',w:100,d:100,color:'#6f9bd1'},
@@ -334,32 +335,67 @@ async function loadState(){
 
 function fmt(n){ return (Math.round(n*100)/100).toLocaleString('de-DE'); }
 
-// Grundlage: Start hinten rechts. Für andere Startecken wird gespiegelt,
-// damit die Federn immer zur Startecke und die Nuten (mit den Füßen) davon weg zeigen.
-function getSides(p){
-  const base=p.rot===90
-    ? {top:'nut', right:'feder', bottom:'feder', left:'nut'}
-    : {top:'feder', right:'feder', bottom:'nut', left:'nut'};
-  const sc=state.startCorner||'hr';
-  const s={...base};
-  if(sc[1]==='l'){ s.left=base.right; s.right=base.left; }
-  if(sc[0]==='v'){ s.top=base.bottom; s.bottom=base.top; }
+// Nach nivtec-Montageanleitung zeigen die Federseiten aller Podeste zur Startecke
+// (Standard: hinten rechts), die Nutseiten mit den Füßen davon weg.
+// Ein 2×1-Podest hat Feder an einer langen und einer kurzen Seite und lässt sich nicht spiegeln:
+// Die lange Seite folgt der Regel, die kurze ergibt sich aus der Drehung.
+const START_CORNERS=['hr','hl','vr','vl'];
+const START_CORNER_NAMES={hr:'hinten rechts',hl:'hinten links',vr:'vorne rechts',vl:'vorne links'};
+
+function getSides(p, corner){
+  const sc=corner||getEffectiveCorner();
+  const d=renderDims(p);
+  const V=sc[1]==='r'?'right':'left';
+  const H=sc[0]==='h'?'top':'bottom';
+  let feders;
+  if(d.w===d.h) feders=[V,H];
+  else if(d.w>d.h) feders=[H, H==='top'?'right':'left'];
+  else feders=[V, V==='right'?'bottom':'top'];
+  const s={top:'nut', right:'nut', bottom:'nut', left:'nut'};
+  for(const f of feders) s[f]='feder';
   return s;
 }
 
-function getStartPlateId(){
-  const sc=state.startCorner||'hr';
+// Liegende 2×1-Podeste passen nur zu Start hinten rechts / vorne links, stehende nur zu hinten links / vorne rechts.
+function fitsCorner(w,h,corner){
+  if(w===h) return true;
+  const lying=w>h;
+  return lying === (corner==='hr'||corner==='vl');
+}
+function countMisfits(list, corner){
+  let n=0;
+  for(const p of list){ const d=renderDims(p); if(!fitsCorner(d.w,d.h,corner)) n++; }
+  return n;
+}
+
+let cornerCache={key:null, corner:'hr'};
+function getEffectiveCorner(){
+  if(state.startCorner && state.startCorner!=='auto') return state.startCorner;
+  const key=state.stageW+'|'+state.stageD+'|'+state.placed.map(p=>p.x+','+p.y+','+renderDims(p).w+','+renderDims(p).h).join(';');
+  if(cornerCache.key===key) return cornerCache.corner;
+  let best='hr', bestScore=Infinity;
+  for(const c of START_CORNERS){
+    const score=countMisfits(state.placed,c)*10000+getFootPointSet(c).feet.size;
+    if(score<bestScore){ bestScore=score; best=c; }
+  }
+  cornerCache={key, corner:best};
+  return best;
+}
+
+function getStartPlateId(list, corner){
+  const sc=corner||getEffectiveCorner();
   const cx=sc[1]==='r' ? state.stageW : 0;
   const cy=sc[0]==='v' ? state.stageD : 0;
-  for(const p of state.placed){
+  for(const p of (list||state.placed)){
     const d=renderDims(p);
     if((p.x===cx||p.x+d.w===cx) && (p.y===cy||p.y+d.h===cy)) return p.id;
   }
   return null;
 }
 
-function getFootPointSet(){
-  const placed=state.placed;
+function getFootPointSet(corner, list){
+  const placed=list||state.placed;
+  const sc=corner||getEffectiveCorner();
   const cornerSet=new Set();
   for(const p of placed){
     const d=renderDims(p);
@@ -376,7 +412,7 @@ function getFootPointSet(){
     let carried=false;
     for(const p of placed){
       const d=renderDims(p);
-      const sides=getSides(p);
+      const sides=getSides(p, sc);
       const x0=p.x, y0=p.y, x1=p.x+d.w, y1=p.y+d.h;
       if(py===y0 && px>x0 && px<x1){ hasContinuousEdge=true; if(sides.top==='nut') carried=true; }
       if(py===y1 && px>x0 && px<x1){ hasContinuousEdge=true; if(sides.bottom==='nut') carried=true; }
@@ -392,7 +428,8 @@ function getFootPointSet(){
 // Bevorzugt die Platte, die an diesem Punkt an keiner Nachbar-Nut hängt (also selbst trägt),
 // danach die mit den meisten Nut-Seiten an dieser Ecke.
 function getFootAssignments(){
-  const {feet}=getFootPointSet();
+  const corner=getEffectiveCorner();
+  const {feet}=getFootPointSet(corner);
   const placed=state.placed;
   const result=[];
   for(const key of feet){
@@ -403,7 +440,7 @@ function getFootAssignments(){
       const d=renderDims(p);
       const x0=p.x, y0=p.y, x1=p.x+d.w, y1=p.y+d.h;
       if(!((px===x0||px===x1) && (py===y0||py===y1))) continue;
-      const sides=getSides(p);
+      const sides=getSides(p, corner);
       const vSide=px===x0?'left':'right';
       const hSide=py===y0?'top':'bottom';
       const dirY=py===y0?1:-1, dirX=px===x0?1:-1;
@@ -411,7 +448,7 @@ function getFootAssignments(){
       for(const q of placed){
         if(q===p) continue;
         const qd=renderDims(q);
-        const qs=getSides(q);
+        const qs=getSides(q, corner);
         const qx0=q.x, qy0=q.y, qx1=q.x+qd.w, qy1=q.y+qd.h;
         const yIn=py+dirY*0.5, xIn=px+dirX*0.5;
         if(sides[vSide]==='feder' && yIn>qy0 && yIn<qy1){
@@ -542,6 +579,8 @@ function updateStats(){  const total=(state.stageW/100)*(state.stageD/100);
   document.getElementById('statFree').textContent=fmt(total-used)+' m²';
   const legs=countLegs();
   document.getElementById('statLegs').textContent=legs+' × '+state.legLength+' cm';
+  const autoOpt=document.querySelector('#startCornerSelect option[value="auto"]');
+  if(autoOpt) autoOpt.textContent='automatisch ('+START_CORNER_NAMES[getEffectiveCorner()]+')';
 
   const counts=new Map();
   for(const p of state.placed){
@@ -1204,10 +1243,34 @@ function autoFillStage(){
   const primaryFootprints=allFootprints.filter(f=>f.typeId===state.primaryTypeId);
   const bounds={x:0,y:0,w:state.stageW,h:state.stageD};
 
-  const newPlaced=[];
-  shelfPack(primaryFootprints, newPlaced, bounds);
-  const primaryCount=newPlaced.length;
-  gapFill(allFootprints, newPlaced, bounds);
+  // Jede mögliche Startecke mit liegenden und stehenden Hauptpodesten durchrechnen.
+  // Volle Podeste beginnen an der Startecke, Reststücke landen an den Nutseiten.
+  // Gewinnt: größte belegte Fläche, dann wenigste Füße, dann wenigste Podeste.
+  const corners=(state.startCorner && state.startCorner!=='auto') ? [state.startCorner] : START_CORNERS;
+  let best=null;
+  for(const corner of corners){
+    for(const strict of [true,false]){
+      const fits=f=>fitsCorner(f.w,f.hgt,corner);
+      const prim=strict ? primaryFootprints.filter(fits) : primaryFootprints;
+      if(prim.length===0) continue;
+      const list=[];
+      shelfPack(prim, list, bounds);
+      const primCount=list.length;
+      gapFill(allFootprints.filter(fits), list, bounds);
+      gapFill(allFootprints, list, bounds);
+      for(const q of list){
+        const d=renderDims(q);
+        if(corner[1]==='r') q.x=state.stageW-q.x-d.w;
+        if(corner[0]==='v') q.y=state.stageD-q.y-d.h;
+      }
+      let area=0; for(const q of list){ area+=q.w*q.d; }
+      const score=countMisfits(list,corner)*10000+getFootPointSet(corner, list).feet.size*100+list.length;
+      const better=!best || area>best.area || (area===best.area && score<best.score);
+      if(better) best={list, primCount, area, score, corner};
+    }
+  }
+  const newPlaced=best ? best.list : [];
+  const primaryCount=best ? best.primCount : 0;
 
   state.placed=newPlaced;
   state.selectedId=null;
@@ -1375,8 +1438,7 @@ function exportPDF(){
     fy+=5;
   }
   const legs=countLegs();
-  const scNames={hr:'hinten rechts',hl:'hinten links',vr:'vorne rechts',vl:'vorne links'};
-  doc.text(`Füße nötig: ${legs} x ${state.legLength} cm  (Punkt im Plan = Ecke, in der der Fuß steckt; Start ${scNames[state.startCorner||'hr']})`, margin, fy);
+  doc.text(`Füße nötig: ${legs} x ${state.legLength} cm  (Punkt im Plan = Ecke, in der der Fuß steckt; Start ${START_CORNER_NAMES[getEffectiveCorner()]})`, margin, fy);
 
   doc.save('buehnenplan.pdf');
 }
@@ -1666,7 +1728,7 @@ async function init(){
   if(!state.primaryTypeId && state.types.length>0){ state.primaryTypeId=state.types[0].id; }
   document.getElementById('stageW').value=state.stageW/100;
   document.getElementById('stageD').value=state.stageD/100;
-  document.getElementById('startCornerSelect').value=state.startCorner||'hr';
+  document.getElementById('startCornerSelect').value=state.startCorner||'auto';
   renderLegOptions();
   renderLibrary();
   renderRailTypeGrid();
